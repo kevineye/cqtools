@@ -37,10 +37,19 @@ sub cmd {
     my $self = $class->new($options);
     $cmd = $self->CMD_MAP->{$cmd} if exists $self->CMD_MAP->{$cmd};
     $cmd = 'help' if !$cmd or !$self->can($cmd);
-    my $out = $self->$cmd(@$args);
-    print $out;
-    print "\n" if length $out and $out !~ /\n$/ and -t STDOUT;
-    exit 0;
+    my $out;
+    eval {
+        $out = $self->$cmd(@$args);
+    };
+    if ($@) {
+        my $error = "$@\n" if length $@ and $@ !~ /\n$/;
+        warn $error;
+        exit -1;
+    } else {
+        print $out;
+        print "\n" if length $out and $out !~ /\n$/ and -t STDOUT;
+        exit 0;
+    }
 }
 
 sub _load_config {
@@ -172,6 +181,20 @@ sub _get_raw {
     return $ua->request($req);
 }
 
+sub _post_sling {
+    my ($self, $url, $params) = @_;
+    my $ua = LWP::UserAgent->new;
+    my $req = POST(URI->new_abs($url, $self->{url}), $params);
+    $req->authorization_basic(split ':', $self->{user}) if $self->{user};
+    $req->header(accept => 'application/json,/;q=0.9');
+    my $res = $ua->request($req);
+    if ($res->is_success) {
+        return decode_json($res->content);
+    } else {
+        die CQAdm::SlingPostServletError->new(decode_json($res->content));
+    }
+}
+
 sub _post_raw {
     my ($self, $url, $params) = @_;
     my $ua = LWP::UserAgent->new;
@@ -285,16 +308,14 @@ sub put {
     };
     $params->{"$filename\@TypeHint"} = $options->{type} if $options->{type};
 
-    my $res = $self->_post_raw($basename, $params);
-    die "cannot create path $path" unless $res->is_success;
+    $self->_post_sling($basename, $params);
     return;
 }
 
 sub rm {
     my ($self, $options, $path) = _parse_cmd_opts({}, @_);
     my ($basename, $filename) = $path =~ m{(.*)/(.*)};
-    my $res = $self->_post_raw($basename, { "$filename\@Delete" => 1 });
-    die "cannot delete path $path" unless $res->is_success;
+    $self->_post_sling($basename, { "$filename\@Delete" => 1 });
     return;
 }
 
@@ -302,9 +323,21 @@ sub mknode {
     my ($self, $options, $path) = _parse_cmd_opts({ t => 'type' }, @_);
     my $params = {};
     $params->{'jcr:primaryType'} = $options->{type} if $options->{type};
-    my $res = $self->_post_raw($path, $params);
-    die "cannot delete path $path" unless $res->is_success;
+    $self->_post_sling($path, $params);
     return;
+}
+
+
+package CQAdm::SlingPostServletError;
+use overload '""' => 'to_string';
+
+sub new {
+    my ($class, $o) = @_;
+    return bless $o || {}, $class;
+}
+
+sub to_string {
+    return shift->{title};
 }
 
 
