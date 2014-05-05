@@ -7,6 +7,7 @@ use autodie qw(:all);
 
 use Cwd qw(cwd abs_path);
 use File::Slurp 'write_file';
+use HTML::Entities;
 use HTTP::Request::Common qw(GET POST);
 use JSON 'decode_json';
 use LWP::UserAgent;
@@ -312,6 +313,42 @@ sub ls {
     return $out;
 }
 
+sub query_sql {
+    my $self = shift;
+    return $self->_query('sql', @_);
+}
+
+sub query_xpath {
+    my $self = shift;
+    return $self->_query('xpath', @_);
+}
+
+sub _query {
+    my $self = shift;
+    my $type = shift;
+    unshift @_, undef;
+    my (undef, $options, $query, @fields) = _parse_cmd_opts({ json => undef }, @_);
+    my $ua = LWP::UserAgent->new;
+    my $url = URI->new_abs('/content.query.json', $self->{url});
+    $url->query_form(queryType => $type, statement => $query);
+    my $req = GET($url);
+    $req->authorization_basic(split ':', $self->{user}) if $self->{user};
+    $req->header(accept => 'application/json,/;q=0.9');
+    my $res = $ua->request($req);
+    die CQAdm::QueryError->new($res->content) unless $res->is_success;
+    if ($options->{json}) {
+        return $res->content;
+    } else {
+        my $data = decode_json($res->content);
+        @fields = grep { $_ ne 'name' and $_ ne 'jcr:score' } keys %{$data->[0]} unless @fields;
+        my $out;
+        for my $row (@$data) {
+            $out .= join("\t", map { $row->{$_} } @fields)."\n";
+        }
+        return $out;
+    }
+}
+
 sub put {
     my ($self, $options, $path, $value) = _parse_cmd_opts({ t => 'type' }, @_);
     my ($basename, $filename) = $path =~ m{(.*)/(.*)};
@@ -350,6 +387,21 @@ sub new {
 
 sub to_string {
     return shift->{title};
+}
+
+
+package CQAdm::QueryError;
+use overload '""' => 'to_string';
+
+sub new {
+    my ($class, $content) = @_;
+    return bless \$content, $class;
+}
+
+sub to_string {
+    my $self = shift;
+    $$self =~ m{<title>500 (.*?)</title>}s;
+    return HTML::Entities::decode($1);
 }
 
 
