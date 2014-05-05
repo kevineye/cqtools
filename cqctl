@@ -7,6 +7,7 @@ use autodie qw(:all);
 
 use Cwd qw(cwd abs_path);
 use File::Slurp 'read_file';
+use File::Spec 'rel2abs';
 use POSIX qw(setuid setgid setsid);
 use YAML 'LoadFile';
 
@@ -43,7 +44,7 @@ sub _load_config {
             my $confdir = $self->{conf};
             $confdir =~ s{/[^/]*$}{};
             if (exists $config->{dir}) {
-                $self->{dir} = File::Spec->rel2abs($self->{dir}, $confdir);
+                $self->{dir} = File::Spec->rel2abs($config->{dir}, $confdir);
             } else {
                 $self->{dir} = "$confdir/crx-quickstart" if -d "$confdir/crx-quickstart" && -x "$confdir/crx-quickstart/bin/start";
                 $self->{dir} = $confdir if $confdir =~ m{/crx-quickstart\b([^/]*)$} && -x "$confdir/bin/start";
