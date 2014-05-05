@@ -1,0 +1,230 @@
+#!/usr/bin/perl
+use strict;
+
+package CQCtl;
+
+use autodie qw(:all);
+
+use Cwd qw(cwd abs_path);
+use File::Slurp 'read_file';
+use POSIX qw(setuid setgid setsid);
+use YAML 'LoadFile';
+
+use constant WAIT_MIN => 0.5;
+use constant WAIT_MAX => 3;
+use constant WAIT_FACTOR=> 1.5;
+use constant CONFIG_NAME => '.cqctl';
+
+sub new {
+    my ($class, $options) = @_;
+    my $self = bless { %$options }, $class;
+    $self->_load_config;
+    return $self;
+}
+
+sub cmd {
+    my $class = shift;
+    my ($options, $cmd, $args) = $class->_parse_args(@_);
+    my $self = $class->new($options);
+    $cmd = 'help' if !$cmd or !$self->can($cmd);
+    $self->$cmd(@$args);
+    return $self;
+}
+
+sub _load_config {
+    my ($self) = @_;
+    if (exists $self->{dir}) {
+        $self->{dir} = abs_path $self->{dir};
+    }
+    if (my $file = $self->_find_config) {
+        my ($config) = LoadFile($file);
+        $self->{conf} = abs_path $file;
+        unless ($self->{dir}) {
+            my $confdir = $self->{conf};
+            $confdir =~ s{/[^/]*$}{};
+            if (exists $config->{dir}) {
+                $self->{dir} = File::Spec->rel2abs($self->{dir}, $confdir);
+            } else {
+                $self->{dir} = "$confdir/crx-quickstart" if -d "$confdir/crx-quickstart" && -x "$confdir/crx-quickstart/bin/start";
+                $self->{dir} = $confdir if $confdir =~ m{/crx-quickstart\b([^/]*)$} && -x "$confdir/bin/start";
+            }
+        }
+        $self->{$_} or $self->{$_} = $config->{$_} for keys %$config;
+    }
+
+    $self->{dir} = abs_path 'crx-quickstart' if -d 'crx-quickstart' && -x 'crx-quickstart/bin/start';
+    $self->{dir} = cwd if cwd =~ m{/crx-quickstart\b([^/]*)$} && -x 'bin/start';
+
+    if (-d $self->{dir}) {
+        chdir $self->{dir};
+        $ENV{PWD} = $self->{dir};
+    }
+}
+
+sub _find_config {
+    my ($self) = @_;
+    return $self->{conf} if $self->{conf} and -r $self->{conf};
+    return $self->{c} if $self->{c} and -r $self->{c};
+    return $ENV{CQCTL_CONF} if $ENV{CQCTL_CONF} and -r $ENV{CQCTL_CONF};
+    my $save_cwd = cwd;
+    while (cwd ne '/') {
+        if (-r CONFIG_NAME) {
+            my $c = cwd . '/' . CONFIG_NAME;
+            chdir $save_cwd;
+            return $c;
+        }
+        chdir '..';
+    }
+    chdir $save_cwd;
+    return $ENV{HOME} . CONFIG_NAME if $ENV{HOME} and -r $ENV{HOME} . CONFIG_NAME;
+    return;
+}
+
+sub _parse_args {
+    my $class = shift;
+
+    my $cmd;
+    my $options = {};
+    my $args = [];
+
+    while(@_) {
+        my $a = shift;
+        if ($a eq '--conf' or $a eq '-c') {
+            $options->{conf} = shift;
+        } elsif ($a eq '--dir') {
+            $options->{dir} = shift;
+        } else {
+            push @$args, $a;
+        }
+    }
+
+    $cmd = shift @$args;
+    $cmd =~ s/-/_/g;
+    $cmd = undef if $cmd =~ /^_/;
+
+    return ($options, $cmd, $args);
+}
+
+sub help {
+    die <<HELP;
+usage: $0 <cmd> [ --conf|-c <file> ] [ --dir <crx-quickstart> ]
+    help
+    start
+    stop
+    status
+    restart
+    clear-logs
+    wait-for-stop
+    tail-error-log
+    tail-access-log
+HELP
+}
+
+sub start {
+    my $self = shift;
+    die "CQ is already started\n" if $self->_get_status->{running};
+    _daemonize('bin/start');
+}
+
+sub clear_logs {
+    # TODO probably more logs
+    if(-e 'logs/error.log') {
+        open LOG, '>', 'logs/error.log';
+        close LOG;
+    }
+    if(-e 'logs/access.log') {
+        open LOG, '>', 'logs/access.log';
+        close LOG;
+    }
+}
+
+sub restart {
+    my $self = shift;
+    $self->stop;
+    $self->start;
+}
+
+sub stop {
+    my $self = shift;
+    die "CQ is not running\n" unless $self->_get_status->{running};
+    my $pid = $self->_get_status->{pid};
+    _daemonize('bin/stop');
+}
+
+sub wait_for_stop {
+    my $self = shift;
+    my $pid = $self->_get_status->{pid};
+    unless (_try(sub { not $self->_get_status->{running} }, 15)) {
+        warn "Sending TERM to $pid...\n";
+        kill 15, $pid;
+        unless (_try(sub { not $self->_get_status->{running} }, 30)) {
+            warn "Sending KILL to $pid...\n";
+            kill 9, $pid;
+            _try(sub { not $self->_get_status->{running} });
+        }
+    }
+}
+
+sub status {
+    my $self = shift;
+    my $status = $self->_get_status;
+    print $status->{message}."\n";
+    exit ($status->{running} ? 0 : 3);
+}
+
+sub _get_status {
+    my $self = shift;
+    my $pidfile =  'conf/cq.pid';
+    my $pid = -e $pidfile && int (read_file $pidfile);
+    my $running = $pid && (scalar qx{jps}) =~ m{^\Q$pid\E}m;
+    my $status = {
+        running => !!$running,
+    };
+    $status->{pid} = $pid if $pid;
+    $status->{message} = "CQ is not running";
+    $status->{message} = "CQ is running with pid $pid" if $running;
+    return $status;
+}
+
+sub tail_error_log {
+    my $self = shift;
+    die "CQ is not running\n" unless $self->_get_status->{running};
+    exec qw(tail -f logs/error.log);
+}
+
+sub tail_access_log {
+    my $self = shift;
+    die "CQ is not running\n" unless $self->_get_status->{running};
+    exec qw(tail -f logs/access.log);
+}
+
+sub _try {
+    my $code = shift;
+    my $max = shift;
+    my $start = time;
+    my $wait = WAIT_MIN;
+    while(1) {
+        my $r = $code->();
+        return $r if $r;
+        return if $max and time-$start > $max;
+        sleep $wait;
+        $wait *= WAIT_FACTOR;
+        $wait = WAIT_MAX if $wait > WAIT_MAX;
+    }
+}
+
+sub _daemonize {
+    my $pid = fork();
+    return if $pid;
+    open STDIN, "< /dev/null";
+    open STDOUT, "> /dev/null";
+    setsid();
+    open STDERR, ">&STDOUT";
+    exec @_;
+}
+
+
+package main;
+CQCtl->cmd(@ARGV) unless caller;
+
+1;

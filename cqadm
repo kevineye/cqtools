@@ -1,0 +1,313 @@
+#!/usr/bin/perl
+use strict;
+
+package CQAdm;
+
+use autodie qw(:all);
+
+use Cwd qw(cwd abs_path);
+use File::Slurp 'write_file';
+use HTTP::Request::Common qw(GET POST);
+use JSON 'decode_json';
+use LWP::UserAgent;
+use URI;
+use YAML 'LoadFile';
+
+use constant WAIT_MIN => 0.5;
+use constant WAIT_MAX => 3;
+use constant WAIT_FACTOR=> 1.5;
+use constant CONFIG_NAME => '.cqadm';
+use constant CMD_MAP => { mkdir => 'mknode' };
+
+sub new {
+    my ($class, $options) = @_;
+    my $self = bless { %$options,
+        url => 'http://localhost:4502',
+        user => 'admin:admin',
+        cmd => 0,
+    }, $class;
+    $self->_load_config;
+    return $self;
+}
+
+sub cmd {
+    my $class = shift;
+    my ($options, $cmd, $args) = $class->_parse_args(@_);
+    $options->{cmd} = 1;
+    my $self = $class->new($options);
+    $cmd = $self->CMD_MAP->{$cmd} if exists $self->CMD_MAP->{$cmd};
+    $cmd = 'help' if !$cmd or !$self->can($cmd);
+    my $out = $self->$cmd(@$args);
+    print $out;
+    print "\n" if length $out and $out !~ /\n$/ and -t STDOUT;
+    exit 0;
+}
+
+sub _load_config {
+    my ($self) = @_;
+    if (my $file = $self->_find_config) {
+        my ($config) = LoadFile($file);
+        $self->{conf} = abs_path $file;
+        $self->{$_} or $self->{$_} = $config->{$_} for keys %$config;
+    }
+}
+
+sub _find_config {
+    my ($self) = @_;
+    return $self->{conf} if $self->{conf} and -r $self->{conf};
+    return $self->{c} if $self->{c} and -r $self->{c};
+    return $ENV{CQCTL_CONF} if $ENV{CQCTL_CONF} and -r $ENV{CQCTL_CONF};
+    my $save_cwd = cwd;
+    while (cwd ne '/') {
+        if (-r CONFIG_NAME) {
+            my $c = cwd . '/' . CONFIG_NAME;
+            chdir $save_cwd;
+            return $c;
+        }
+        chdir '..';
+    }
+    chdir $save_cwd;
+    return $ENV{HOME} . CONFIG_NAME if $ENV{HOME} and -r $ENV{HOME} . CONFIG_NAME;
+    return;
+}
+
+sub _parse_args {
+    my $class = shift;
+
+    my $cmd;
+    my $options = {};
+    my $args = [];
+
+    while(@_) {
+        my $a = shift;
+        if ($a eq '--conf' or $a eq '-c') {
+            $options->{conf} = shift;
+        } elsif ($a eq '--user' or $a eq '-u') {
+            $$options->{user} = shift;
+        } elsif ($a eq '--url') {
+            $$options->{url} = shift;
+        } else {
+            push @$args, $a;
+        }
+    }
+
+    $cmd = shift @$args;
+    $cmd =~ s/-/_/g;
+    $cmd = undef if $cmd =~ /^_/;
+
+    return ($options, $cmd, $args);
+}
+
+sub help {
+    die <<HELP;
+usage: $0 <cmd> [ --conf|-c <file> ] [ --url <http://localhost:4502> ] [ --user|-u <admin:admin> ]
+    help
+    status
+    wait-for-start
+    get <path> [ --output|-o <file> ]
+    put <path> <value> [ --type|-t <proptype> ]
+    rm <path>
+    mkdir <path> [ --type|-t <nodetype> ]
+    get-json <path> [ --tidy ] [ --depth|-d <num|infinite> ] [ --output|-o <file> ]
+HELP
+}
+
+sub status {
+    my $self = shift;
+    my $status = $self->_get_status(@_);
+    print $status->{message}."\n";
+    exit $status->{exit_code};
+}
+
+sub _get_status {
+    my $self = shift;
+    my $status = {};
+
+    my $vmstat = $self->_get('/system/console/vmstat');
+    $vmstat =~ qr{var statData = (\{.*?\});}ms and $status->{vmstat} = decode_json $1;
+
+    $status->{starting} = $status->{vmstat} && $status->{vmstat}{systemStartLevel} < 30;
+    $status->{started} = $status->{vmstat} && $status->{vmstat}{systemStartLevel} >= 30;
+    $status->{not_running} = !$status->{started} && !$status->{starting};
+
+    if ($status->{started}) {
+        my $res = $self->_get('/libs/cq/core/content/login.html', '');
+        $status->{login_ready} = $res =~ /<!-- QUICKSTART_HOMEPAGE /;
+    }
+
+    if ($status->{login_ready}) {
+        my $res = $self->_get('/welcome');
+        $res =~ qr{<div id="productinfo">\s*(.*?) \|} and $status->{product_info} = $1;
+    }
+
+    $status->{ready} = $status->{product_info} =~ /^Adobe CQ/;
+
+
+    if ($status->{not_running}) {
+        $status->{message} = 'CQ is not running';
+        $status->{exit_code} = 3;
+    } elsif ($status->{starting}) {
+        $status->{message} = 'CQ is starting';
+        $status->{exit_code} = 4;
+    } elsif ($status->{started} && !$status->{ready}) {
+        $status->{message} = 'CQ is started, but not ready';
+        $status->{exit_code} = 5;
+    } elsif ($status->{ready}) {
+        $status->{message} = 'CQ is ready';
+        $status->{exit_code} = 0;
+    } else {
+        $status->{message} = 'CQ status is unknown';
+        $status->{exit_code} = -1;
+    }
+
+    return $status;
+}
+
+sub _get_raw {
+    my ($self, $url, $user) = @_;
+    my $ua = LWP::UserAgent->new;
+    my $req = GET(URI->new_abs($url, $self->{url}));
+    $user = $self->{user} unless defined $user;
+    $req->authorization_basic(split ':', $user) if $user;
+    return $ua->request($req);
+}
+
+sub _post_raw {
+    my ($self, $url, $params) = @_;
+    my $ua = LWP::UserAgent->new;
+    my $req = POST(URI->new_abs($url, $self->{url}), $params);
+    $req->authorization_basic(split ':', $self->{user}) if $self->{user};
+    return $ua->request($req);
+}
+
+sub _get {
+    my $self = shift;
+    my $res = $self->_get_raw(@_);
+    return $res->is_success && $res->content;
+}
+
+sub wait_for_start {
+    my $self = shift;
+    _try(sub { $self->_get_status->{ready} });
+}
+
+sub _try {
+    my $code = shift;
+    my $max = shift;
+    my $start = time;
+    my $wait = WAIT_MIN;
+    while(1) {
+        my $r = $code->();
+        return $r if $r;
+        return if $max and time-$start > $max;
+        sleep $wait;
+        $wait *= WAIT_FACTOR;
+        $wait = WAIT_MAX if $wait > WAIT_MAX;
+    }
+}
+
+sub _parse_cmd_opts {
+    my $spec = shift;
+    my $self = shift;
+    my $options = {};
+    my @rest;
+    while (@_) {
+        my $o = shift;
+        if ($o =~ /^-+(.*)/) {
+            my $s = $1;
+            $s =~ s/-/_/g;
+            $s = $spec->{$s} if exists $spec->{$s} and $spec->{$s};
+            $options->{$s} = (exists $spec->{$s} && !defined $spec->{$s} ? 1 : shift);
+        } else {
+            push @rest, $o;
+        }
+    }
+    return ($self, $options, @rest);
+}
+
+sub get {
+    my ($self, $options, $path) = _parse_cmd_opts({ o => 'output' }, @_);
+    my $res = $self->_get_raw($path);
+    die "cannot get path $path\n" unless $res->is_success;
+    $res = $self->_get_raw("$path.html") if $res->content_type eq 'text/html';
+    if ($options->{output}) {
+        write_file($options->{output}, $res->content);
+        return;
+    } else {
+        return $res->content;
+    }
+}
+
+sub get_json {
+    my ($self, $options, $path) = _parse_cmd_opts({ d => 'depth', o => 'output', tidy => undef }, @_);
+    my $selector = $options->{depth} || 0;
+    $selector = "tidy.$selector" if exists $options->{tidy};
+    my $res = $self->_get_raw("$path.$selector.json");
+    die "cannot get path $path\n" unless $res->is_success;
+    if ($options->{output}) {
+        write_file($options->{output}, $res->content);
+        return;
+    } else {
+        return $res->content;
+    }
+}
+
+sub ls {
+    my ($self, $options, $path) = _parse_cmd_opts({ l => 'long', long => undef }, @_);
+    my $res = $self->_get_raw("$path.1.json");
+    die "cannot list path $path\n" unless $res->is_success;
+    my $items = decode_json($res->content);
+    my $out = '';
+    for my $item (keys %$items) {
+        my $value = $items->{$item};
+        if (ref $value eq 'HASH') {
+            $out .= "$item/\n";
+        } else {
+            if ($options->{long}) {
+                if (ref $value eq 'ARRAY') {
+                    $value = '[ ' . join(', ', @$value) . ' ]';
+                }
+                $out .= "$item: $value\n";
+            } else {
+                $out .= "$item\n";
+            }
+        }
+    }
+    return $out;
+}
+
+sub put {
+    my ($self, $options, $path, $value) = _parse_cmd_opts({ t => 'type' }, @_);
+    my ($basename, $filename) = $path =~ m{(.*)/(.*)};
+    my $params = {
+        $filename => $value,
+    };
+    $params->{"$filename\@TypeHint"} = $options->{type} if $options->{type};
+
+    my $res = $self->_post_raw($basename, $params);
+    die "cannot create path $path" unless $res->is_success;
+    return;
+}
+
+sub rm {
+    my ($self, $options, $path) = _parse_cmd_opts({}, @_);
+    my ($basename, $filename) = $path =~ m{(.*)/(.*)};
+    my $res = $self->_post_raw($basename, { "$filename\@Delete" => 1 });
+    die "cannot delete path $path" unless $res->is_success;
+    return;
+}
+
+sub mknode {
+    my ($self, $options, $path) = _parse_cmd_opts({ t => 'type' }, @_);
+    my $params = {};
+    $params->{'jcr:primaryType'} = $options->{type} if $options->{type};
+    my $res = $self->_post_raw($path, $params);
+    die "cannot delete path $path" unless $res->is_success;
+    return;
+}
+
+
+package main;
+CQAdm->cmd(@ARGV) unless caller;
+
+1;
