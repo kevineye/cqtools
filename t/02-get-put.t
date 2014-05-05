@@ -36,7 +36,7 @@ is system($cqadm, 'put', $testfile, $testvalue), 0, 'put';
 is qx($cqadm get $testfile), $testvalue, 'get put';
 
 is system($cqadm, 'rm', $testfile), 0, 'rm';
-is system([0,255], $cqadm, 'get', $testfile), 255, 'get rm';
+is system([0,255], "$cqadm get $testfile >/dev/null 2>&1"), 255, 'get rm';
 
 is system($cqadm, 'mkdir', $testfile), 0, 'mkdir';
 is system($cqadm, 'put', "$testfile/testprop", "hello world"), 0, 'put in new node';
