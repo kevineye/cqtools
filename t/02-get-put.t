@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 use strict;
 use autodie qw(:all);
-use Test::More tests => 15;
+use Test::More tests => 16;
 
 use Cwd 'cwd';
 use FindBin '$Bin';
@@ -27,6 +27,8 @@ END {
         system($cqctl, 'wait-for-stop');
     }
 }
+
+like qx($cqadm info), qr/^Adobe CQ/, 'info';
 
 is qx($cqadm get /content/jcr:primaryType), 'sling:OrderedFolder', 'get';
 

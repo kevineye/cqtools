@@ -112,6 +112,7 @@ sub help {
 usage: $0 <cmd> [ --conf|-c <file> ] [ --url <http://localhost:4502> ] [ --user|-u <admin:admin> ]
     help
     status
+    info
     wait-for-start
     get <path> [ --output|-o <file> ]
     put <path> <value> [ --type|-t <proptype> ]
@@ -170,6 +171,17 @@ sub _get_status {
     }
 
     return $status;
+}
+
+sub info {
+    my $status = shift->_get_status;
+    if ($status->{ready}) {
+        return <<OUT
+$status->{product_info}
+$status->{vmstat}{runtime}
+Started $status->{vmstat}{lastStarted}, up $status->{vmstat}{upTime}
+OUT
+    }
 }
 
 sub _get_raw {
