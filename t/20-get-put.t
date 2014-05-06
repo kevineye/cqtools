@@ -28,7 +28,7 @@ END {
     }
 }
 
-like qx($cqadm info), qr/^Adobe CQ/, 'info';
+like qx($cqadm info), qr/^Adobe\b/, 'info';
 
 is qx($cqadm get /content/jcr:primaryType), 'sling:OrderedFolder', 'get';
 

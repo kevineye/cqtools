@@ -6,10 +6,11 @@ package CQAdm;
 use autodie qw(:all);
 
 use Cwd qw(cwd abs_path);
+use Digest::MD5 'md5_hex';
 use File::Slurp 'write_file';
 use HTML::Entities;
 use HTTP::Request::Common qw(GET POST);
-use JSON 'decode_json';
+use JSON qw(decode_json encode_json);
 use LWP::UserAgent;
 use URI;
 use YAML 'LoadFile';
@@ -120,6 +121,17 @@ usage: $0 <cmd> [ --conf|-c <file> ] [ --url <http://localhost:4502> ] [ --user|
     rm <path>
     mkdir <path> [ --type|-t <nodetype> ]
     get-json <path> [ --tidy ] [ --depth|-d <num|infinite> ] [ --output|-o <file> ]
+    ls [ -l ] <path>
+    query-json [ --json ] <query> [ <field ... > ]
+    query-xpath [ --json ] <query> [ <field ... > ]
+    pkg-create [ --build ] <pkg-group/pkg-name> <path ...>
+    pkg-build </etc/packages/pkg-path/zip>
+    pkg-remove </etc/packages/pkg-path/zip>
+    pkg [ --output|-o <file> ] <path ...>
+    get-runmode
+    online-backup <path> [ --delay <ms> ]
+    online-backup-cancel
+    wait-for-online-backup
 HELP
 }
 
@@ -142,17 +154,17 @@ sub _get_status {
     $status->{not_running} = !$status->{started} && !$status->{starting};
 
     if ($status->{started}) {
-        my $res = $self->_get('/libs/cq/core/content/login.html', '');
+        my $res = $self->_get('/login', '');
         $status->{login_ready} = $res =~ /<!-- QUICKSTART_HOMEPAGE /;
     }
 
     if ($status->{login_ready}) {
         my $res = $self->_get('/welcome');
         $res =~ qr{<div id="productinfo">\s*(.*?) \|} and $status->{product_info} = $1;
+        $status->{product_info} =~ m{Version ([0-9.]+)} and $status->{version} = $1;
     }
 
-    $status->{ready} = $status->{product_info} =~ /^Adobe CQ/;
-
+    $status->{ready} = $status->{product_info} =~ /^Adobe\b/;
 
     if ($status->{not_running}) {
         $status->{message} = 'CQ is not running';
@@ -189,6 +201,7 @@ sub _get_raw {
     my ($self, $url, $user) = @_;
     my $ua = LWP::UserAgent->new;
     my $req = GET(URI->new_abs($url, $self->{url}));
+    $req->header(user_agent => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/31.0.1650.63 Safari/537.36');
     $user = $self->{user} unless defined $user;
     $req->authorization_basic(split ':', $user) if $user;
     return $ua->request($req);
@@ -208,10 +221,25 @@ sub _post_sling {
     }
 }
 
-sub _post_raw {
+sub _post_pkg {
     my ($self, $url, $params) = @_;
     my $ua = LWP::UserAgent->new;
     my $req = POST(URI->new_abs($url, $self->{url}), $params);
+    $req->authorization_basic(split ':', $self->{user}) if $self->{user};
+    $req->header(accept => 'application/json,/;q=0.9');
+    my $res = $ua->request($req);
+    die 'unauthorized' if $res->code == 401;
+    die CQAdm::PkgGenericError->new($res->content) unless $res->content =~ /^\{/;
+    my $msg = decode_json($res->content);
+    die CQAdm::PkgError->new($msg) unless $msg->{success};
+    return $msg;
+}
+
+sub _post_raw {
+    my ($self, $url, $params) = @_;
+    my $ua = LWP::UserAgent->new;
+    push @{ $ua->requests_redirectable }, 'POST';
+    my $req = POST(URI->new_abs($url, $self->{url}), $params || {});
     $req->authorization_basic(split ':', $self->{user}) if $self->{user};
     return $ua->request($req);
 }
@@ -265,6 +293,7 @@ sub _parse_cmd_opts {
 sub get {
     my ($self, $options, $path) = _parse_cmd_opts({ o => 'output' }, @_);
     my $res = $self->_get_raw($path);
+    # TODO make this stream when possible
     die "cannot get path $path\n" unless $res->is_success;
     $res = $self->_get_raw("$path.html") if $res->content_type eq 'text/html';
     if ($options->{output}) {
@@ -376,6 +405,90 @@ sub mknode {
     return;
 }
 
+sub pkg_create {
+    my ($self, $options, $path, @filters) = _parse_cmd_opts({ 'build' => undef }, @_);
+    my ($group, $pkg) = ('tmp', $path);
+    ($group, $pkg) = ($1, $2) if $path =~ m{(.*?)/(.*)};
+    my $pkg_res = $self->_post_pkg('/crx/packmgr/service/.json', { cmd => 'create', packageName => $pkg, groupName => $group });
+    my $filter = {
+        'sling:resourceType' => 'cq/packaging/components/pack/definition/filterlist',
+        'jcr:primaryType' => 'nt:unstructured',
+    };
+    for (my $i = 0; $i < @filters; $i++) {
+        $filter->{"f$i"} = {
+            rules => [],
+            mode => 'replace',
+            'sling:resourceType' => 'cq/packaging/components/pack/definition/filter',
+            root => $filters[$i],
+            'jcr:primaryType' => 'nt:unstructured',
+        };
+    }
+    $self->_post_sling($pkg_res->{path} . '/jcr:content/vlt:definition/filter',
+        { ':operation' => 'import', ':contentType' => 'json', ':content' => encode_json($filter) });
+
+    $self->pkg_build($pkg_res->{path}) if $options->{build};
+    return $pkg_res->{path};
+}
+
+sub pkg_build {
+    my ($self, $options, $path) = _parse_cmd_opts({}, @_);
+    $self->_post_pkg('/crx/packmgr/service/.json' . $path, { cmd => 'build' });
+    return;
+}
+
+sub pkg_rm {
+    my ($self, $options, $path) = _parse_cmd_opts({}, @_);
+    $self->_post_pkg('/crx/packmgr/service/.json' . $path, { cmd => 'delete' });
+    return;
+}
+
+sub pkg {
+    my ($self, $options, @paths) = _parse_cmd_opts({ o => 'output' }, @_);
+    my $name = md5_hex(rand);
+    my $pkg = $self->pkg_create($name, @paths);
+    $self->pkg_build($pkg);
+    my $ret = $self->get($pkg, $options->{output} ? ( '--output' => $options->{output} ) : ());
+    $self->pkg_rm($pkg);
+    return $ret;
+}
+
+sub get_runmode {
+    my ($self) = @_;
+    my $settings = $self->_get('/system/console/config/slingsettings.txt');
+    $settings =~ m{^Run Modes = \[\s*(.*?)\s*\]}m;
+    return wantarray ? split(/\s*,\s*/, $1) : $1;
+}
+
+sub online_backup {
+    my ($self, $options, $path) = _parse_cmd_opts({}, @_);
+    my $params = { target => $path, force => 'true' };
+    $params->{delay} = $options->{delay} if exists $options->{delay};
+    my $res = $self->_post_raw('/libs/granite/backup/content/admin/backups/', $params);
+    die "cannot start online backup\n" unless $res->is_success;
+    return;
+}
+
+sub wait_for_online_backup {
+    my ($self, $options) = _parse_cmd_opts({}, @_);
+    my $ua = LWP::UserAgent->new;
+    my $url = URI->new_abs('/libs/granite/backup/content/admin/backups.progress.json', $self->{url});
+    my $req = GET($url);
+    $req->authorization_basic(split ':', $self->{user}) if $self->{user};
+    $req->header(accept => 'application/json,/;q=0.9');
+    _try(sub {
+        my $res = $ua->request($req);
+        my $status = decode_json($res->content);
+        return not $status->{inProgress};
+    });
+    return;
+}
+
+sub online_backup_cancel {
+    my ($self, $options) = _parse_cmd_opts({}, @_);
+    my $res = $self->_post_raw('/libs/granite/backup/content/admin/backups.cancel.html');
+    die "cannot cancel online backup\n" unless $res->is_success;
+    return;
+}
 
 package CQAdm::SlingPostServletError;
 use overload '""' => 'to_string';
@@ -387,6 +500,34 @@ sub new {
 
 sub to_string {
     return shift->{title};
+}
+
+
+package CQAdm::PkgError;
+use overload '""' => 'to_string';
+
+sub new {
+    my ($class, $o) = @_;
+    return bless $o || {}, $class;
+}
+
+sub to_string {
+    return shift->{msg} || 'unknown package error';
+}
+
+
+package CQAdm::PkgGenericError;
+use overload '""' => 'to_string';
+
+sub new {
+    my ($class, $s) = @_;
+    return bless \$s, $class;
+}
+
+sub to_string {
+    my $self = shift;
+    $$self =~ m{java.lang.IllegalArgumentException: ([^\n\r]+)};
+    return $1 || 'unknown package error';
 }
 
 

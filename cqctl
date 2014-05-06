@@ -6,7 +6,7 @@ package CQCtl;
 use autodie qw(:all);
 
 use Cwd qw(cwd abs_path);
-use File::Slurp 'read_file';
+use File::Slurp qw(read_file edit_file_lines);
 use File::Spec 'rel2abs';
 use POSIX qw(setuid setgid setsid);
 use YAML 'LoadFile';
@@ -56,6 +56,7 @@ sub _load_config {
     $self->{dir} = abs_path 'crx-quickstart' if -d 'crx-quickstart' && -x 'crx-quickstart/bin/start';
     $self->{dir} = cwd if cwd =~ m{/crx-quickstart\b([^/]*)$} && -x 'bin/start';
 
+    $self->{original_cwd} = cwd;
     if (-d $self->{dir}) {
         chdir $self->{dir};
         $ENV{PWD} = $self->{dir};
@@ -118,12 +119,16 @@ usage: $0 <cmd> [ --conf|-c <file> ] [ --dir <crx-quickstart> ]
     wait-for-stop
     tail-error-log
     tail-access-log
+    set-runmode <runmodes>
+    set-port <port>
+    offline-backup <path>
 HELP
 }
 
 sub start {
     my $self = shift;
     die "CQ is already started\n" if $self->_get_status->{running};
+    die "cannot find start script " . cwd . "/bin/start\n" unless -x 'bin/start';
     _daemonize('bin/start');
 }
 
@@ -148,7 +153,7 @@ sub restart {
 sub stop {
     my $self = shift;
     die "CQ is not running\n" unless $self->_get_status->{running};
-    my $pid = $self->_get_status->{pid};
+    die "cannot find stop script " . cwd . "/bin/stop\n" unless -x 'bin/stop';
     _daemonize('bin/stop');
 }
 
@@ -156,10 +161,10 @@ sub wait_for_stop {
     my $self = shift;
     my $pid = $self->_get_status->{pid};
     unless (_try(sub { not $self->_get_status->{running} }, 15)) {
-        warn "Sending TERM to $pid...\n";
+        #warn "Sending TERM to $pid...\n";
         kill 15, $pid;
-        unless (_try(sub { not $self->_get_status->{running} }, 30)) {
-            warn "Sending KILL to $pid...\n";
+        unless (_try(sub { not $self->_get_status->{running} }, 60)) {
+            #warn "Sending KILL to $pid...\n";
             kill 9, $pid;
             _try(sub { not $self->_get_status->{running} });
         }
@@ -197,6 +202,38 @@ sub tail_access_log {
     my $self = shift;
     die "CQ is not running\n" unless $self->_get_status->{running};
     exec qw(tail -f logs/access.log);
+}
+
+sub set_runmode {
+    my ($self, $runmode) = @_;
+    die "cannot find bin/start\n" unless -f 'bin/start';
+    my $worked = 0;
+    my (undef, undef, $save_mode) = stat 'bin/start';
+    edit_file_lines { s{^(\s*CQ_RUNMODE\s*=\s*)(['"]).*?$2(\s*)$}{$1$2$runmode$2$3} and $worked = 1 } 'bin/start';
+    chmod $save_mode, 'bin/start';
+    die "could not set runmode\n" unless $worked;
+    return;
+}
+
+sub set_port {
+    my ($self, $port) = @_;
+    die "cannot find bin/start\n" unless -f 'bin/start';
+    my $worked = 0;
+    my (undef, undef, $save_mode) = stat 'bin/start';
+    edit_file_lines { s{^(\s*CQ_PORT\s*=\s*)(['"]?).*?$2(\s*)$}{$1$2$port$2$3} and $worked = 1 } 'bin/start';
+    chmod $save_mode, 'bin/start';
+    die "could not set port\n" unless $worked;
+    return;
+}
+
+sub offline_backup {
+    my ($self, $path) = @_;
+    my $save_cwd = cwd;
+    chdir $self->{original_cwd};
+    $path = abs_path $path;
+    chdir $save_cwd;
+    die "will not overwrite $path" if -e $path;
+    system('cp', '-an', '.', $path);
 }
 
 sub _try {
