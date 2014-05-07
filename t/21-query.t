@@ -29,7 +29,7 @@ END {
 }
 
 TODO: {
-    todo_skip 'query not working in CQ 5.6', 4 if qx($cqadm info =~ /Version 5\.6/);
+    todo_skip 'query not working in CQ 5.6', 4 if qx($cqadm info) =~ /Version 5\.6/;
 
     like qx($cqadm query-sql "select * from nt:base where jcr:path like '/content/geometrixx/%' and contains(*, 'shapes')"),
         qr{^/content/geometrixx/en/products/circle\tcq:Page$}m, 'sql query';

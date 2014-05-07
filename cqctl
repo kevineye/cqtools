@@ -53,11 +53,12 @@ sub _load_config {
         $self->{$_} or $self->{$_} = $config->{$_} for keys %$config;
     }
 
-    $self->{dir} = abs_path 'crx-quickstart' if -d 'crx-quickstart' && -x 'crx-quickstart/bin/start';
-    $self->{dir} = cwd if cwd =~ m{/crx-quickstart\b([^/]*)$} && -x 'bin/start';
+    $self->{dir} = abs_path 'crx-quickstart' if !$self->{dir} && -d 'crx-quickstart' && -x 'crx-quickstart/bin/start';
+    $self->{dir} = cwd if !$self->{dir} && cwd =~ m{/crx-quickstart\b([^/]*)$} && -x 'bin/start';
 
     $self->{original_cwd} = cwd;
     if (-d $self->{dir}) {
+        die "cannot find $self->{dir}\n" unless -d $self->{dir};
         chdir $self->{dir};
         $ENV{PWD} = $self->{dir};
     }
