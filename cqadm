@@ -23,10 +23,11 @@ use constant CMD_MAP => { mkdir => 'mknode' };
 
 sub new {
     my ($class, $options) = @_;
-    my $self = bless { %$options,
+    my $self = bless {
         url => 'http://localhost:4502',
         user => 'admin:admin',
         cmd => 0,
+        %$options,
     }, $class;
     $self->_load_config;
     return $self;
@@ -94,9 +95,9 @@ sub _parse_args {
         if ($a eq '--conf' or $a eq '-c') {
             $options->{conf} = shift;
         } elsif ($a eq '--user' or $a eq '-u') {
-            $$options->{user} = shift;
+            $options->{user} = shift;
         } elsif ($a eq '--url') {
-            $$options->{url} = shift;
+            $options->{url} = shift;
         } else {
             push @$args, $a;
         }

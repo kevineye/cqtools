@@ -116,7 +116,7 @@ usage: $0 <cmd> [ --conf|-c <file> ] [ --dir <crx-quickstart> ]
     stop
     status
     restart
-    clear-logs
+    clear-logs [ --all|-a ]
     wait-for-stop
     tail-error-log
     tail-access-log
@@ -134,14 +134,17 @@ sub start {
 }
 
 sub clear_logs {
-    # TODO probably more logs
-    if(-e 'logs/error.log') {
-        open LOG, '>', 'logs/error.log';
-        close LOG;
-    }
-    if(-e 'logs/access.log') {
-        open LOG, '>', 'logs/access.log';
-        close LOG;
+    my ($self, $arg) = @_;
+    chdir 'logs';
+    if ($arg eq '--all' or $arg eq '-a') {
+        system 'rm', '-r', glob '*' if glob '*';
+    } else {
+        for my $log (qw(error.log access.log request.log stderr.log stdout.log)) {
+            if(-e $log) {
+                open LOG, '>', $log;
+                close LOG;
+            }
+        }
     }
 }
 
