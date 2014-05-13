@@ -127,10 +127,12 @@ usage: $0 <cmd> [ --conf|-c <file> ] [ --url <http://localhost:4502> ] [ --user|
     ls [ -l ] <path>
     query-json [ --json ] <query> [ <field ... > ]
     query-xpath [ --json ] <query> [ <field ... > ]
+    pkg-install </etc/packages/pkg-path.zip ...>
+    pkg-install <localpackage.zip ...>
     pkg-create [ --build ] <pkg-group/pkg-name> <path ...>
     pkg-build </etc/packages/pkg-path.zip>
     pkg-remove </etc/packages/pkg-path.zip>
-    pkg [ --output|-o <file> ] <path ...>
+    zip [ --output|-o <file> ] <path ...>
     get-runmode
     online-backup <path> [ --delay <ms> ]
     online-backup-cancel
@@ -245,7 +247,7 @@ sub _post_sling {
 sub _post_pkg {
     my ($self, $url, $params) = @_;
     my $ua = LWP::UserAgent->new;
-    my $req = POST(URI->new_abs($url, $self->{url}), $params);
+    my $req = POST(URI->new_abs($url, $self->{url}), $params ? (Content_Type => 'form-data', Content => $params) : ());
     $req->authorization_basic(split ':', $self->{user}) if $self->{user};
     $req->header(accept => 'application/json,/;q=0.9');
     my $res = $ua->request($req);
@@ -493,7 +495,7 @@ sub pkg_rm {
     return;
 }
 
-sub pkg {
+sub zip {
     my ($self, $options, @paths) = _parse_cmd_opts({ o => 'output' }, @_);
     my $name = md5_hex(rand);
     my $pkg = $self->pkg_create($name, @paths);
@@ -501,6 +503,29 @@ sub pkg {
     my $ret = $self->get($pkg, $options->{output} ? ( '--output' => $options->{output} ) : ());
     $self->pkg_rm($pkg);
     return $ret;
+}
+
+sub pkg_install {
+    my ($self, $options, @paths) = _parse_cmd_opts({}, @_);
+    if ($paths[0] =~ m{^/etc/packages/}) {
+        $self->pkg_install_remote($_) for @paths;
+    } else {
+        $self->pkg_install_local($_) for @paths;
+    }
+}
+
+sub pkg_install_remote {
+    my ($self, $options, $path) = _parse_cmd_opts({}, @_);
+    $self->_post_pkg('/crx/packmgr/service/.json' . $path, [ cmd => 'install', recursive => 'true', acHandling => 'overwrite' ]);
+    return;
+}
+
+sub pkg_install_local {
+    my ($self, $options, $path) = _parse_cmd_opts({}, @_);
+    die "package $path does not exist" unless -r $path;
+    my $res = $self->_post_pkg('/crx/packmgr/service/.json', [ cmd => 'upload', force => 'true', package => [ $path ] ]);
+    $self->pkg_install_remote($res->{path});
+    return;
 }
 
 sub get_runmode {
