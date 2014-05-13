@@ -36,7 +36,8 @@ sub cmd {
         $out = $self->$cmd(@$args);
     };
     if ($@) {
-        my $error = "$@\n" if length $@ and $@ !~ /\n$/;
+        my $error = $@;
+        $error .= "\n" if length $error and $error !~ /\n$/;
         warn $error;
         exit -1;
     } else {

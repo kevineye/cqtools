@@ -45,7 +45,8 @@ sub cmd {
         $out = $self->$cmd(@$args);
     };
     if ($@) {
-        my $error = "$@\n" if length $@ and $@ !~ /\n$/;
+        my $error = $@;
+        $error .= "\n" if length $error and $error !~ /\n$/;
         warn $error;
         exit -1;
     } else {
@@ -122,18 +123,37 @@ usage: $0 <cmd> [ --conf|-c <file> ] [ --url <http://localhost:4502> ] [ --user|
     rm <path>
     mkdir <path> [ --type|-t <nodetype> ]
     get-json <path> [ --tidy ] [ --depth|-d <num|infinite> ] [ --output|-o <file> ]
+    put-json <path> [ <json> ]
     ls [ -l ] <path>
     query-json [ --json ] <query> [ <field ... > ]
     query-xpath [ --json ] <query> [ <field ... > ]
     pkg-create [ --build ] <pkg-group/pkg-name> <path ...>
-    pkg-build </etc/packages/pkg-path/zip>
-    pkg-remove </etc/packages/pkg-path/zip>
+    pkg-build </etc/packages/pkg-path.zip>
+    pkg-remove </etc/packages/pkg-path.zip>
     pkg [ --output|-o <file> ] <path ...>
     get-runmode
     online-backup <path> [ --delay <ms> ]
     online-backup-cancel
     wait-for-online-backup
+    find-config <osgipid>
+    get-config <osgipid> [ <property> ]
+    set-config <osgipid> <prop> <value> [ <prop> <value> ... ] [ --path <path> ]
+    force-delete-config <osgipid>
 HELP
+
+# TODO:
+# put-file [ <localfilename> | - ] <path>
+# pkg-install </etc/packages/pkg-path.zip>
+# pkg-install <localpackage.zip>
+# get-threads
+# get-replication-queue
+# activate
+# deactivate
+# cp
+# mv
+# open
+# touch
+
 }
 
 sub status {
@@ -371,11 +391,20 @@ sub _query {
     } else {
         my $data = decode_json($res->content);
         @fields = grep { $_ ne 'name' and $_ ne 'jcr:score' } keys %{$data->[0]} unless @fields;
-        my $out;
-        for my $row (@$data) {
-            $out .= join("\t", map { $row->{$_} } @fields)."\n";
+
+        if (wantarray) {
+            my @out;
+            for my $row (@$data) {
+                push @out, [ map { $row->{$_} } @fields ];
+            }
+            return @out;
+        } else {
+            my $out;
+            for my $row (@$data) {
+                $out .= join("\t", map { $row->{$_} } @fields)."\n";
+            }
+            return $out;
         }
-        return $out;
     }
 }
 
@@ -391,6 +420,26 @@ sub put {
     return;
 }
 
+sub put_json {
+    my ($self, $options, $path, @json) = _parse_cmd_opts({ replace => undef, r => 'replace' }, @_);
+    my ($basename, $filename) = $path =~ m{(.*)/(.*)};
+    my $params = {
+        ':operation' => 'import',
+        ':name' => $filename,
+        ':contentType' => 'json',
+    };
+    $params->{':replace'} = $params->{':replaceProperties'} = 'true' if $options->{replace};
+    if(@json == 0 || $json[0] eq '-') {
+        $params->{':content'} = join '', <STDIN>;
+    } elsif(ref $json[0]) {
+        $params->{':content'} = encode_json($json[0]);
+    } else {
+        $params->{':content'} = $json[0];
+    }
+    $self->_post_sling("$basename/", $params);
+    return;
+}
+
 sub rm {
     my ($self, $options, $path) = _parse_cmd_opts({}, @_);
     my ($basename, $filename) = $path =~ m{(.*)/(.*)};
@@ -400,9 +449,10 @@ sub rm {
 
 sub mknode {
     my ($self, $options, $path) = _parse_cmd_opts({ t => 'type' }, @_);
-    my $params = {};
+    my ($basename, $filename) = $path =~ m{(.*)/(.*)};
+    my $params = { ':name' => $filename };
     $params->{'jcr:primaryType'} = $options->{type} if $options->{type};
-    $self->_post_sling($path, $params);
+    $self->_post_sling("$basename/", $params);
     return;
 }
 
@@ -491,6 +541,132 @@ sub online_backup_cancel {
     return;
 }
 
+sub find_config {
+    my ($self, $options, $pid) = _parse_cmd_opts({}, @_);
+    die "pid required" unless $pid;
+    die "invalid pid $pid" if $pid =~ m{[%'/]};
+    my @paths = map { $_->[0] } $self->query_sql("select * from sling:OsgiConfig where jcr:path like '%/$pid'", 'jcr:path');
+    my $modes = [ $self->get_runmode ];
+    @paths = sort { _config_sort_helper($b, $modes) <=> _config_sort_helper($a, $modes) } @paths;
+    return wantarray ? @paths : join "\n", @paths;
+}
+
+sub _config_sort_helper {
+    my ($config, $runmodes) = @_;
+    my %modes = map { $_ => 1 } @$runmodes;
+    my $in_libs = substr($config, 0, 6) eq '/libs/';
+    my $in_apps = substr($config, 0, 6) eq '/apps/';
+    $config =~ m{/config(?:\.([^/]+))?/[^/]+$};
+    my @modes = split /\./, $1;
+    my @matching_modes = grep { exists $modes{$_} } @modes;
+    my @slashes = $config =~ m{/}g;
+    my $rank = (
+        $in_libs * 1000 +
+        $in_apps * 2000 +
+        @matching_modes * 1000000000 +
+        (999 - @modes) * 1000000 +
+        @slashes * 1
+    );
+    return $rank;
+}
+
+sub get_config {
+    my ($self, $options, $pid, $prop) = _parse_cmd_opts({ json => undef }, @_);
+    my $config = $self->get('/system/console/config/Configurations.txt');
+    my ($this_config) = $config =~ m{^PID = $pid\n(.*?)\n\n}ms;
+    my $config = {};
+    if ($this_config) {
+        for my $line (split /\n/, $this_config) {
+            next unless $line =~ m/^\s*(\S+) = (.*)/;
+            my ($k, $v) = ($1, $2);
+            $v = [ split /, /, $1 ] if $v =~ m{^\[(.*)\]$};
+            $config->{$k} = $v;
+        }
+    } else {
+        my $ua = LWP::UserAgent->new;
+        my $req = POST(URI->new_abs("/system/console/configMgr/$pid", $self->{url}));
+        $req->authorization_basic(split ':', $self->{user}) if $self->{user};
+        $req->header(accept => 'application/json,/;q=0.9');
+        my $res = $ua->request($req);
+        die "error reading config from felix console for $pid\n" unless $res->is_success;
+        my $data = decode_json($res->content);
+        for my $p (keys %{$data->{properties}}) {
+            $config->{$p} = $data->{properties}{$p}{value} || $data->{properties}{$p}{values};
+        }
+    }
+    if ($prop) {
+        if ($options->{json}) {
+            return JSON->new->allow_nonref->encode($config->{$prop});
+        } else {
+            return $config->{$prop} || '';
+        }
+    } else {
+        if ($options->{json}) {
+            return encode_json($config);
+        } else {
+            return join '', map { sprintf "%s = %s\n", $_, ref $config->{$_} ? join(', ', @{$config->{$_}}) : $config->{$_} } keys %$config;
+        }
+    }
+}
+
+sub _exists_node {
+    my ($self, $path) = @_;
+    my ($basename, $filename) = $path =~ m{(.*)/(.*)};
+    my ($d) = eval { decode_json($self->get_json($basename, '--depth', 1)) };
+    return unless $d;
+    return exists $d->{$filename} && ref $d->{$filename} && exists $d->{$filename}{'jcr:primaryType'};
+}
+
+sub _exists_property {
+    my ($self, $path) = @_;
+    my ($basename, $filename) = $path =~ m{(.*)/(.*)};
+    my ($d) = eval { decode_json($self->get_json($basename, '--depth', 1)) };
+    return unless $d;
+    return exists $d->{$filename} && !ref $d->{$filename};
+}
+
+sub set_config {
+    my ($self, $options, $pid, @args) = _parse_cmd_opts({}, @_);
+    my $props = {};
+    while (@args) {
+        my $p = shift @args;
+        if ($args[0] eq '[') {
+            shift @args;
+            my @v;
+            while ((my $n = shift @args) ne ']') {
+                push @v, $n;
+            }
+            shift @args;
+            $props->{$p} = \@v;
+        } else {
+            $props->{$p} = shift @args;
+        }
+    }
+
+    my @runmodes = $self->get_runmode;
+    my ($target) = $self->find_config($pid);
+    $target = sprintf('/apps/system/config.%s/%s', join('.', @runmodes), $pid) if substr($target, 0, 6) ne '/apps/';
+    $target = "$options->{path}/$pid" if $options->{path};
+
+    my ($basename, $filename) = $target =~ m{(.*)/(.*)};
+    $self->mknode($basename) unless $self->_exists_node($basename);
+
+    $props->{'jcr:primaryType'} = 'sling:OsgiConfig';
+    if ($self->_exists_node($target)) {
+        $self->_post_sling($target, $props);
+    } else {
+        $props->{':name'} = $filename;
+        $self->_post_sling("$basename/", $props);
+    }
+    return;
+}
+
+sub force_delete_config {
+    my ($self, $options, $pid) = _parse_cmd_opts({}, @_);
+    $self->_post_raw("/system/console/configMgr/$pid", { delete => 1, apply => 1 });
+    return;
+}
+
 package CQAdm::SlingPostServletError;
 use overload '""' => 'to_string';
 
@@ -500,7 +676,7 @@ sub new {
 }
 
 sub to_string {
-    return shift->{title};
+    return $_[0]->{'status.message'} || $_[0]->{title};
 }
 
 

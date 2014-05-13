@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 use strict;
 use autodie qw(:all);
-use Test::More tests => 16;
+use Test::More tests => 29;
 
 use Cwd 'cwd';
 use FindBin '$Bin';
@@ -46,8 +46,23 @@ is qx($cqadm get $testfile/jcr:primaryType), 'sling:Folder', 'get mkdir';
 is qx($cqadm get $testfile/testprop), 'hello world', 'get mkdir put';
 is decode_json(qx($cqadm get-json $testfile))->{testprop}, 'hello world', 'json';
 like qx($cqadm ls -l $testfile), qr{^testprop: hello world$}m, 'ls';
+is system($cqadm, 'mkdir', "$testfile.author"), 0, 'mkdir with dot';
+is system($cqadm, 'put', "$testfile.author/testprop", "xyz"), 0, 'put with dot';
+is qx($cqadm get $testfile.author/testprop), 'xyz', 'get put with dot';
+is qx($cqadm get $testfile/testprop), 'hello world', 'get put without dot';
+is system($cqadm, 'rm', "$testfile.author"), 0, 'rm with dot';
 is system($cqadm, 'rm', $testfile), 0, 'rm mkdir';
 
 is system($cqadm, 'mkdir', '-t', 'nt:unstructured', $testfile), 0, 'mkdir type';
 is qx($cqadm get $testfile/jcr:primaryType), 'nt:unstructured', 'get mkdir type';
 is system($cqadm, 'rm', $testfile), 0, 'rm mkdir type';
+
+is system($cqadm, 'put-json', $testfile, "{ 'jcr:primaryType': 'nt:unstructured', 'propOne' : 'propOneValue', 'childOne' : { 'childPropOne' : true } }"), 0, 'put-json';
+is qx($cqadm get $testfile/jcr:primaryType), 'nt:unstructured', 'get put-json';
+is qx($cqadm get $testfile/propOne), 'propOneValue', 'get put-json';
+is system($cqadm, 'rm', $testfile), 0, 'rm put-json';
+
+is system(qq{echo "{ 'jcr:primaryType': 'nt:unstructured', 'propOne' : 'propOneValue', 'childOne' : { 'childPropOne' : true } }" | $cqadm put-json $testfile}), 0, 'put-json stdin';
+is qx($cqadm get $testfile/jcr:primaryType), 'nt:unstructured', 'get put-json';
+is qx($cqadm get $testfile/propOne), 'propOneValue', 'get put-json';
+is system($cqadm, 'rm', $testfile), 0, 'rm put-json';
