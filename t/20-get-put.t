@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 use strict;
 use autodie qw(:all);
-use Test::More tests => 29;
+use Test::More tests => 34;
 
 use Cwd 'cwd';
 use FindBin '$Bin';
@@ -41,6 +41,10 @@ is system($cqadm, 'rm', $testfile), 0, 'rm';
 is system([0,255], "$cqadm get $testfile >/dev/null 2>&1"), 255, 'get rm';
 
 is system($cqadm, 'mkdir', $testfile), 0, 'mkdir';
+is qx($cqadm exists $testfile), $testfile, 'exists - true';
+is system($cqadm, 'mkdir', '-p', $testfile), 0, 'mkdir -p';
+is system($cqadm, 'mkdir', '-p', "$testfile/a/b/c"), 0, 'mkdir -p deep';
+is qx($cqadm exists "$testfile/a/b/c"), "$testfile/a/b/c", 'exists - true';
 is system($cqadm, 'put', "$testfile/testprop", "hello world"), 0, 'put in new node';
 is qx($cqadm get $testfile/jcr:primaryType), 'sling:Folder', 'get mkdir';
 is qx($cqadm get $testfile/testprop), 'hello world', 'get mkdir put';
@@ -52,6 +56,7 @@ is qx($cqadm get $testfile.author/testprop), 'xyz', 'get put with dot';
 is qx($cqadm get $testfile/testprop), 'hello world', 'get put without dot';
 is system($cqadm, 'rm', "$testfile.author"), 0, 'rm with dot';
 is system($cqadm, 'rm', $testfile), 0, 'rm mkdir';
+is qx($cqadm exists $testfile), '', 'exists - false';
 
 is system($cqadm, 'mkdir', '-t', 'nt:unstructured', $testfile), 0, 'mkdir type';
 is qx($cqadm get $testfile/jcr:primaryType), 'nt:unstructured', 'get mkdir type';
@@ -66,3 +71,4 @@ is system(qq{echo "{ 'jcr:primaryType': 'nt:unstructured', 'propOne' : 'propOneV
 is qx($cqadm get $testfile/jcr:primaryType), 'nt:unstructured', 'get put-json';
 is qx($cqadm get $testfile/propOne), 'propOneValue', 'get put-json';
 is system($cqadm, 'rm', $testfile), 0, 'rm put-json';
+

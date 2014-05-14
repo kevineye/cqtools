@@ -137,6 +137,7 @@ usage: $0 <cmd> [ --conf|-c <file> ] [ --dir <crx-quickstart> ]
     tail-access-log
     set-runmode <runmodes>
     set-port <port>
+    install-on-start <package.zip>
     offline-backup <path>
     get-cluster-id
     join-cluster <addresses ...> [ --id <clusterid> ]
@@ -249,6 +250,14 @@ sub set_port {
     edit_file_lines { s{^(\s*CQ_PORT\s*=\s*)(['"]?).*?$2(\s*)$}{$1$2$port$2$3} and $worked = 1 } 'bin/start';
     chmod $save_mode, 'bin/start';
     die "could not set port\n" unless $worked;
+    return;
+}
+
+sub install_on_start {
+    my ($self, $pkg) = @_;
+    die "no package $pkg\n" unless -r $pkg;
+    mkdir 'install' unless -d 'install';
+    system('cp', $pkg, 'install/');
     return;
 }
 

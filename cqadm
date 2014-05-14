@@ -19,7 +19,7 @@ use constant WAIT_MIN => 0.5;
 use constant WAIT_MAX => 3;
 use constant WAIT_FACTOR=> 1.5;
 use constant CONFIG_NAME => '.cqadm';
-use constant CMD_MAP => { mkdir => 'mknode' };
+use constant CMD_MAP => { mkdir => 'mknode', exists => 'is_present' };
 
 sub new {
     my ($class, $options) = @_;
@@ -125,6 +125,7 @@ usage: $0 <cmd> [ --conf|-c <file> ] [ --url <http://localhost:4502> ] [ --user|
     get-json <path> [ --tidy ] [ --depth|-d <num|infinite> ] [ --output|-o <file> ]
     put-json <path> [ <json> ]
     ls [ -l ] <path>
+    exists <path>
     query-json [ --json ] <query> [ <field ... > ]
     query-xpath [ --json ] <query> [ <field ... > ]
     pkg-install </etc/packages/pkg-path.zip ...>
@@ -231,6 +232,7 @@ sub _get_raw {
 }
 
 sub _post_sling {
+    # TODO: change to use form-data encoding
     my ($self, $url, $params) = @_;
     my $ua = LWP::UserAgent->new;
     my $req = POST(URI->new_abs($url, $self->{url}), $params);
@@ -365,6 +367,16 @@ sub ls {
     return $out;
 }
 
+sub is_present {
+    my ($self, $options, $path) = _parse_cmd_opts({}, @_);
+    my $res = $self->_get_raw("$path.1.json");
+    if ($res->is_success) {
+        return $path;
+    } else {
+        return;
+    }
+}
+
 sub query_sql {
     my $self = shift;
     return $self->_query('sql', @_);
@@ -450,8 +462,12 @@ sub rm {
 }
 
 sub mknode {
-    my ($self, $options, $path) = _parse_cmd_opts({ t => 'type' }, @_);
+    my ($self, $options, $path) = _parse_cmd_opts({ t => 'type', p => undef }, @_);
     my ($basename, $filename) = $path =~ m{(.*)/(.*)};
+    return if $options->{p} and $self->is_present($path);
+    if ($options->{p} and length $basename > 1 and not $self->is_present($basename)) {
+        $self->mknode($basename, $options->{type} ? ( '--type' => $options->{type} ) : ());
+    }
     my $params = { ':name' => $filename };
     $params->{'jcr:primaryType'} = $options->{type} if $options->{type};
     $self->_post_sling("$basename/", $params);
