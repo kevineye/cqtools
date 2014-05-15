@@ -6,7 +6,7 @@ package CQCtl;
 use autodie qw(:all);
 
 use Cwd qw(cwd abs_path);
-use File::Slurp qw(read_file write_file edit_file_lines);
+use File::Slurp qw(read_file write_file);
 use File::Spec 'rel2abs';
 use POSIX qw(setuid setgid setsid);
 use YAML 'LoadFile';
@@ -231,12 +231,23 @@ sub tail_access_log {
     exec qw(tail -f logs/access.log);
 }
 
+# adapted from latest version of File::Slurp
+sub _edit_file_lines(&$) {
+	my($edit_code, $file_name) = @_;
+	my $existing_data = eval { read_file($file_name, { array_ref => 1 }) };
+	die "edit_file_lines '$file_name' - read_file: $!" if $@;
+	my @edited_data = map { $edit_code->(); $_ } @$existing_data;
+	my $write_result = eval { write_file($file_name, { atomic => 1 }, @edited_data) };
+    die "edit_file_lines '$file_name' - write_file: $!" if $@;
+	return $write_result;
+}
+
 sub set_runmode {
     my ($self, $runmode) = @_;
     die "cannot find bin/start\n" unless -f 'bin/start';
     my $worked = 0;
     my (undef, undef, $save_mode) = stat 'bin/start';
-    edit_file_lines { s{^(\s*CQ_RUNMODE\s*=\s*)(['"]).*?$2(\s*)$}{$1$2$runmode$2$3} and $worked = 1 } 'bin/start';
+    _edit_file_lines { s{^(\s*CQ_RUNMODE\s*=\s*)(['"]).*?$2(\s*)$}{$1$2$runmode$2$3} and $worked = 1 } 'bin/start';
     chmod $save_mode, 'bin/start';
     die "could not set runmode\n" unless $worked;
     return;
@@ -247,7 +258,7 @@ sub set_port {
     die "cannot find bin/start\n" unless -f 'bin/start';
     my $worked = 0;
     my (undef, undef, $save_mode) = stat 'bin/start';
-    edit_file_lines { s{^(\s*CQ_PORT\s*=\s*)(['"]?).*?$2(\s*)$}{$1$2$port$2$3} and $worked = 1 } 'bin/start';
+    _edit_file_lines { s{^(\s*CQ_PORT\s*=\s*)(['"]?).*?$2(\s*)$}{$1$2$port$2$3} and $worked = 1 } 'bin/start';
     chmod $save_mode, 'bin/start';
     die "could not set port\n" unless $worked;
     return;
@@ -281,21 +292,25 @@ sub get_cluster_id {
 sub join_cluster {
     my ($self, $options, @addrs) = _parse_cmd_opts({}, @_);
     my $id = $options->{id} || $self->get_cluster_id;
-    unlink 'repository/cluster_node.id';
+    unlink 'repository/cluster_node.id' if -e 'repository/cluster_node.id';
     my $props = "cluster_id=$id\n";
     $props .= "addresses=%s\n", join ',', @addrs;
     write_file 'repository/cluster.properties', sprintf "cluster_id=%s\naddresses=%s\n", $id, join ',', @addrs;
-    system 'rm $(find . -type f -name sling.id.file)';
+    my @slingidfiles = qx{find . -type f -name sling.id.file};
+    chomp @slingidfiles;
+    unlink @slingidfiles if @slingidfiles;
     return;
 }
 
 sub leave_cluster {
     my ($self, $options, @addrs) = _parse_cmd_opts({}, @_);
     my $id = $options->{id} || $self->get_cluster_id;
-    unlink 'repository/cluster_node.id';
-    unlink 'repository/cluster.properties';
+    unlink 'repository/cluster_node.id' if -e 'repository/cluster_node.id';
+    unlink 'repository/cluster.properties' if -e 'repository/cluster.properties';
     unlink 'repository/clustered.txt' if -e 'repository/clustered.txt';
-    system 'rm $(find . -type f -name sling.id.file)';
+    my @slingidfiles = qx{find . -type f -name sling.id.file};
+    chomp @slingidfiles;
+    unlink @slingidfiles if @slingidfiles;
     return;
 }
 
