@@ -71,6 +71,24 @@ sub _load_config {
     $self->{dir} = abs_path 'crx-quickstart' if !$self->{dir} && -d 'crx-quickstart' && -x 'crx-quickstart/bin/start';
     $self->{dir} = cwd if !$self->{dir} && cwd =~ m{/crx-quickstart\b([^/]*)$} && -x 'bin/start';
 
+    my $setuid;
+    my $setgid;
+    if ($self->{user}) {
+        my ($name, $passwd, $uid, $gid) = getpwnam($self->{user});
+        die "no such user $self->{user}" unless $name;
+        $setuid = $uid;
+        $setgid = $gid;
+    }
+    if ($self->{group}) {
+        my ($name, $passwd, $gid) = getgrnam($self->{group});
+        die "no such group $self->{group}" unless $name;
+        $setgid = $gid;
+    }
+    setgid($setgid) or die $! if defined $setgid;
+    setuid($setuid) or die $! if defined $setuid;
+
+    umask oct $self->{umask} if $self->{umask};
+
     $self->{original_cwd} = cwd;
     if (-d $self->{dir}) {
         die "cannot find $self->{dir}\n" unless -d $self->{dir};
@@ -111,6 +129,12 @@ sub _parse_args {
             $options->{conf} = shift;
         } elsif ($a eq '--dir') {
             $options->{dir} = shift;
+        } elsif ($a eq '--user') {
+            $options->{user} = shift;
+        } elsif ($a eq '--group') {
+            $options->{group} = shift;
+        } elsif ($a eq '--umask') {
+            $options->{umask} = shift;
         } else {
             push @$args, $a;
         }
@@ -125,7 +149,7 @@ sub _parse_args {
 
 sub help {
     die <<HELP;
-usage: $0 <cmd> [ --conf|-c <file> ] [ --dir <crx-quickstart> ]
+usage: $0 <cmd> [ --conf|-c <file> ] [ --dir <crx-quickstart> ] [ --user ] [ --group ] [ --umask ]
     help
     start
     stop
@@ -133,6 +157,7 @@ usage: $0 <cmd> [ --conf|-c <file> ] [ --dir <crx-quickstart> ]
     restart
     clear-logs [ --all|-a ]
     wait-for-stop
+    get-pid
     tail-error-log
     tail-access-log
     set-runmode <runmodes>
@@ -146,7 +171,7 @@ HELP
 }
 
 sub start {
-    my $self = shift;
+    my ($self, $options, @addrs) = _parse_cmd_opts({}, @_);
     die "CQ is already started\n" if $self->_get_status->{running};
     die "cannot find start script " . cwd . "/bin/start\n" unless -x 'bin/start';
     _daemonize('bin/start');
@@ -176,10 +201,22 @@ sub restart {
 }
 
 sub stop {
-    my $self = shift;
+    my ($self, $options, @addrs) = _parse_cmd_opts({}, @_);
     die "CQ is not running\n" unless $self->_get_status->{running};
     die "cannot find stop script " . cwd . "/bin/stop\n" unless -x 'bin/stop';
-    _daemonize('bin/stop');
+    my $dopts = {};
+    if ($options->{user}) {
+        my ($name, $passwd, $uid, $gid) = getpwnam($options->{user});
+        die "no such user $options->{user}" unless $name;
+        $dopts->{uid} = $uid;
+        $dopts->{gid} = $gid;
+    }
+    if ($options->{group}) {
+        my ($name, $passwd, $gid) = getgrnam($options->{group});
+        die "no such group $options->{group}" unless $name;
+        $dopts->{gid} = $gid;
+    }
+    _daemonize($dopts, 'bin/stop');
     return;
 }
 
@@ -217,6 +254,12 @@ sub _get_status {
     $status->{message} = "CQ is not running";
     $status->{message} = "CQ is running with pid $pid" if $running;
     return $status;
+}
+
+sub get_pid {
+    my $self = shift;
+    my $status = $self->_get_status;
+    return $status->{pid};
 }
 
 sub tail_error_log {
@@ -330,8 +373,11 @@ sub _try {
 }
 
 sub _daemonize {
+    my $options = shift if ref $_[0];
     my $pid = fork();
     return if $pid;
+    setgid($options->{gid}) or die $! if exists $options->{gid};
+    setuid($options->{uid}) or die $! if exists $options->{uid};
     open STDIN, "< /dev/null";
     open STDOUT, "> /dev/null";
     setsid();

@@ -99,6 +99,8 @@ sub _parse_args {
             $options->{user} = shift;
         } elsif ($a eq '--url') {
             $options->{url} = shift;
+        } elsif ($a eq '--insecure') {
+            $options->{insecure} = 1;
         } else {
             push @$args, $a;
         }
@@ -113,7 +115,7 @@ sub _parse_args {
 
 sub help {
     die <<HELP;
-usage: $0 <cmd> [ --conf|-c <file> ] [ --url <http://localhost:4502> ] [ --user|-u <admin:admin> ]
+usage: $0 <cmd> [ --conf|-c <file> ] [ --url <http://localhost:4502> ] [ --user|-u <admin:admin> ] [ --insecure ]
     help
     status
     info
@@ -126,7 +128,7 @@ usage: $0 <cmd> [ --conf|-c <file> ] [ --url <http://localhost:4502> ] [ --user|
     put-json <path> [ <json> ]
     ls [ -l ] <path>
     exists <path>
-    query-json [ --json ] <query> [ <field ... > ]
+    query-sql [ --json ] <query> [ <field ... > ]
     query-xpath [ --json ] <query> [ <field ... > ]
     pkg-install </etc/packages/pkg-path.zip ...>
     pkg-install <localpackage.zip ...>
@@ -221,9 +223,16 @@ OUT
     }
 }
 
+sub _user_agent {
+    my $self = shift;
+    my $ua = LWP::UserAgent->new;
+    $ua->ssl_opts(verify_hostname => 0) if $self->{insecure};
+    return $ua;
+}
+
 sub _get_raw {
     my ($self, $url, $user) = @_;
-    my $ua = LWP::UserAgent->new;
+    my $ua = $self->_user_agent;
     my $req = GET(URI->new_abs($url, $self->{url}));
     $req->header(user_agent => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/31.0.1650.63 Safari/537.36');
     $user = $self->{user} unless defined $user;
@@ -234,7 +243,7 @@ sub _get_raw {
 sub _post_sling {
     # TODO: change to use form-data encoding
     my ($self, $url, $params) = @_;
-    my $ua = LWP::UserAgent->new;
+    my $ua = $self->_user_agent;
     my $req = POST(URI->new_abs($url, $self->{url}), $params);
     $req->authorization_basic(split ':', $self->{user}) if $self->{user};
     $req->header(accept => 'application/json,/;q=0.9');
@@ -248,7 +257,7 @@ sub _post_sling {
 
 sub _post_pkg {
     my ($self, $url, $params) = @_;
-    my $ua = LWP::UserAgent->new;
+    my $ua = $self->_user_agent;
     my $req = POST(URI->new_abs($url, $self->{url}), $params ? (Content_Type => 'form-data', Content => $params) : ());
     $req->authorization_basic(split ':', $self->{user}) if $self->{user};
     $req->header(accept => 'application/json,/;q=0.9');
@@ -262,7 +271,7 @@ sub _post_pkg {
 
 sub _post_raw {
     my ($self, $url, $params) = @_;
-    my $ua = LWP::UserAgent->new;
+    my $ua = $self->_user_agent;
     push @{ $ua->requests_redirectable }, 'POST';
     my $req = POST(URI->new_abs($url, $self->{url}), $params || {});
     $req->authorization_basic(split ':', $self->{user}) if $self->{user};
@@ -392,7 +401,7 @@ sub _query {
     my $type = shift;
     unshift @_, undef;
     my (undef, $options, $query, @fields) = _parse_cmd_opts({ json => undef }, @_);
-    my $ua = LWP::UserAgent->new;
+    my $ua = $self->_user_agent;
     my $url = URI->new_abs('/content.query.json', $self->{url});
     $url->query_form(queryType => $type, statement => $query);
     my $req = GET($url);
@@ -562,7 +571,7 @@ sub online_backup {
 
 sub wait_for_online_backup {
     my ($self, $options) = _parse_cmd_opts({}, @_);
-    my $ua = LWP::UserAgent->new;
+    my $ua = $self->_user_agent;
     my $url = URI->new_abs('/libs/granite/backup/content/admin/backups.progress.json', $self->{url});
     my $req = GET($url);
     $req->authorization_basic(split ':', $self->{user}) if $self->{user};
@@ -624,7 +633,7 @@ sub get_config {
             $config->{$k} = $v;
         }
     } else {
-        my $ua = LWP::UserAgent->new;
+        my $ua = $self->_user_agent;
         my $req = POST(URI->new_abs("/system/console/configMgr/$pid", $self->{url}));
         $req->authorization_basic(split ':', $self->{user}) if $self->{user};
         $req->header(accept => 'application/json,/;q=0.9');
