@@ -1,11 +1,11 @@
 #!/usr/bin/env perl
 use strict;
 use autodie qw(:all);
-use Test::More tests => 65;
+use Test::More tests => 70;
 
 use Cwd 'cwd';
 use FindBin '$Bin';
-use JSON 'decode_json';
+use JSON qw(encode_json decode_json);
 
 my $cqctl = "$Bin/../cqctl";
 my $cqadm = "$Bin/../cqadm";
@@ -110,3 +110,23 @@ is_deeply decode_json(qx($cqadm get-json $testfile/f/a -d 10)),
 is_deeply decode_json(qx($cqadm get-json $testfile/f/c -d 10)),
     { 'jcr:primaryType' => 'nt:unstructured', propOne => 'propOneValue', childOne => { 'jcr:primaryType' => 'nt:unstructured', childPropOne => 1 }}, 'cp-mv get-json 1';
 is system($cqadm, 'rm', "$testfile"), 0, 'cp-mv cleanup';
+
+my $before = { 'jcr:primaryType' => 'nt:unstructured',
+               a => { prop => 'foo bar', 'jcr:primaryType' => 'nt:unstructured' },
+               b => { prop => 'fizz bar boo',
+                      notp => 'foo bar', 'jcr:primaryType' => 'nt:unstructured' },
+               c => { prop => [ 'bar foo', 'foo bar' ], 'jcr:primaryType' => 'nt:unstructured' },
+               d => { notp => 'foo bar', 'jcr:primaryType' => 'nt:unstructured' },
+             };
+my $after = { 'jcr:primaryType' => 'nt:unstructured',
+               a => { prop => 'foo baz', 'jcr:primaryType' => 'nt:unstructured' },
+               b => { prop => 'fizz baz boo',
+                      notp => 'foo bar', 'jcr:primaryType' => 'nt:unstructured' },
+               c => { prop => [ 'baz foo', 'foo baz' ], 'jcr:primaryType' => 'nt:unstructured' },
+               d => { notp => 'foo bar', 'jcr:primaryType' => 'nt:unstructured' },
+             };
+is system($cqadm, 'put-json', $testfile, encode_json $before), 0, 'replace - put-json';
+is_deeply decode_json(qx($cqadm get-json -d 10 $testfile)), $before, 'replace - get-json before';
+is system($cqadm, 'replace', 'prop', 's/bar/baz/gi', "$testfile/a", "$testfile/b", "$testfile/c", "$testfile/d", "$testfile/e"), 0, 'replace';
+is_deeply decode_json(qx($cqadm get-json -d 10 $testfile)), $after, 'replace - get-json after';
+is system($cqadm, 'rm', $testfile), 0, 'replace - cleanup';

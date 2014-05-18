@@ -122,6 +122,7 @@ usage: $0 <cmd> [ --conf|-c <file> ] [ --url <http://localhost:4502> ] [ --user|
     wait-for-start
     get <path> [ --output|-o <file> ]
     put <path> <value> [ --type|-t <proptype> ]
+    replace <property> <code> <path ... >
     rm <path ... > [ --force | -f ]
     cp <path ... > <dest>
     mv <path ... > <dest>
@@ -488,6 +489,32 @@ sub put_json {
     }
     $self->_post_sling("$basename/", $params);
     return;
+}
+
+sub replace {
+    my ($self, $options, $property, $code, @paths) = _parse_cmd_opts({ t => 'type' }, @_);
+    my $mv = $options->{type} && $options->{type} =~ /\[\]/;
+    for my $path (@paths) {
+        my $o = eval { decode_json $self->get_json($path) };
+        if ($o) {
+            my @values = ref $o->{$property} eq 'ARRAY' ? @{$o->{$property}} : !ref $o->{$property} ? $o->{$property} : ();
+            if (@values) {
+                my @orig = @values;
+                eval $code for @values;
+                $self->put("$path/$property", ($options->{type} ? ('--type' => $options->{type}) : ()), @values) unless _array_eq(\@values, \@orig);
+            }
+        }
+    }
+    return;
+}
+
+sub _array_eq {
+    my ($a, $b) = @_;
+    return if @$a != @$b;
+    for (my $i = 0; $i < @$a; $i++) {
+        return unless $a->[$i] eq $b->[$i];
+    }
+    return 1;
 }
 
 sub rm {
