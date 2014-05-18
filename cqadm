@@ -24,12 +24,12 @@ use constant CMD_MAP => { mkdir => 'mknode', exists => 'is_present' };
 sub new {
     my ($class, $options) = @_;
     my $self = bless {
-        url => 'http://localhost:4502',
-        user => 'admin:admin',
         cmd => 0,
         %$options,
     }, $class;
     $self->_load_config;
+    $self->{url} ||= 'http://localhost:4502',
+    $self->{user} ||= 'admin:admin',
     return $self;
 }
 
@@ -122,7 +122,7 @@ usage: $0 <cmd> [ --conf|-c <file> ] [ --url <http://localhost:4502> ] [ --user|
     wait-for-start
     get <path> [ --output|-o <file> ]
     put <path> <value> [ --type|-t <proptype> ]
-    rm <path>
+    rm <path ... > [ --force | -f ]
     mkdir <path> [ --type|-t <nodetype> ]
     get-json <path> [ --tidy ] [ --depth|-d <num|infinite> ] [ --output|-o <file> ]
     put-json <path> [ <json> ]
@@ -130,12 +130,12 @@ usage: $0 <cmd> [ --conf|-c <file> ] [ --url <http://localhost:4502> ] [ --user|
     exists <path>
     query-sql [ --json ] <query> [ <field ... > ]
     query-xpath [ --json ] <query> [ <field ... > ]
-    pkg-install </etc/packages/pkg-path.zip ...>
-    pkg-install <localpackage.zip ...>
-    pkg-create [ --build ] <pkg-group/pkg-name> <path ...>
+    pkg-install </etc/packages/pkg-path.zip ... >
+    pkg-install <localpackage.zip ... >
+    pkg-create [ --build ] <pkg-group/pkg-name> <path ... >
     pkg-build </etc/packages/pkg-path.zip>
     pkg-remove </etc/packages/pkg-path.zip>
-    zip [ --output|-o <file> ] <path ...>
+    zip [ --output|-o <file> ] <path ... >
     get-runmode
     online-backup <path> [ --delay <ms> ]
     online-backup-cancel
@@ -251,7 +251,7 @@ sub _post_sling {
     if ($res->is_success) {
         return decode_json($res->content);
     } else {
-        die CQAdm::SlingPostServletError->new(decode_json($res->content));
+        die CQAdm::SlingPostServletError->new($res);
     }
 }
 
@@ -432,8 +432,20 @@ sub _query {
 }
 
 sub put {
-    my ($self, $options, $path, $value) = _parse_cmd_opts({ t => 'type' }, @_);
+    my ($self, $options, $path, @values) = _parse_cmd_opts({ t => 'type' }, @_);
     my ($basename, $filename) = $path =~ m{(.*)/(.*)};
+
+    my $value;
+    if ($values[0] eq '[' and $values[-1] eq ']') {
+        shift @values;
+        pop @values;
+        $value = \@values;
+    } elsif (@values > 1) {
+        $value = \@ values;
+    } else {
+        $value = shift @values;
+    }
+
     my $params = {
         $filename => $value,
     };
@@ -464,9 +476,12 @@ sub put_json {
 }
 
 sub rm {
-    my ($self, $options, $path) = _parse_cmd_opts({}, @_);
-    my ($basename, $filename) = $path =~ m{(.*)/(.*)};
-    $self->_post_sling($basename, { "$filename\@Delete" => 1 });
+    my ($self, $options, @path) = _parse_cmd_opts({ f => 'force', force => undef }, @_);
+    for my $path (@path) {
+        next if $options->{force} and not $self->is_present($path);
+        my ($basename, $filename) = $path =~ m{(.*)/(.*)};
+        $self->_post_sling($basename, { "$filename\@Delete" => 1 });
+    }
     return;
 }
 
@@ -721,12 +736,21 @@ package CQAdm::SlingPostServletError;
 use overload '""' => 'to_string';
 
 sub new {
-    my ($class, $o) = @_;
-    return bless $o || {}, $class;
+    my ($class, $res) = @_;
+    my $self = bless {
+        'response' => $res,
+    }, $class;
+
+    my $o = eval { decode_json $res->content };
+    $self->{json} = $o if $o and not $@;
+
+    $self->{message} = $self->{json} ? ( $self->{json}{'status.message'} || $self->{json}{title} ) : $self->{response}->message;
+
+    return $self;
 }
 
 sub to_string {
-    return $_[0]->{'status.message'} || $_[0]->{title};
+    return $_[0]->{message};
 }
 
 

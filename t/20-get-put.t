@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 use strict;
 use autodie qw(:all);
-use Test::More tests => 34;
+use Test::More tests => 47;
 
 use Cwd 'cwd';
 use FindBin '$Bin';
@@ -55,11 +55,25 @@ is system($cqadm, 'put', "$testfile.author/testprop", "xyz"), 0, 'put with dot';
 is qx($cqadm get $testfile.author/testprop), 'xyz', 'get put with dot';
 is qx($cqadm get $testfile/testprop), 'hello world', 'get put without dot';
 is system($cqadm, 'rm', "$testfile.author"), 0, 'rm with dot';
+is system($cqadm, 'put', "$testfile/testmulti", "hello world", "hello again"), 0, 'put multi 1';
+is_deeply decode_json(qx($cqadm get-json $testfile))->{testmulti}, ['hello world', 'hello again'], 'get mutli 1';
+is system($cqadm, 'put', "$testfile/testmulti2", '[', "hello world", ']'), 0, 'put multi 2';
+is_deeply decode_json(qx($cqadm get-json $testfile))->{testmulti2}, 'hello world', 'get mutli 2';
 is system($cqadm, 'rm', $testfile), 0, 'rm mkdir';
 is qx($cqadm exists $testfile), '', 'exists - false';
 
 is system($cqadm, 'mkdir', '-t', 'nt:unstructured', $testfile), 0, 'mkdir type';
 is qx($cqadm get $testfile/jcr:primaryType), 'nt:unstructured', 'get mkdir type';
+is system($cqadm, 'rm', $testfile), 0, 'rm mkdir type';
+
+is system($cqadm, 'mkdir', '-t', 'nt:unstructured', $testfile), 0, 'mkdir';
+is system($cqadm, 'mkdir', '-t', 'nt:unstructured', "$testfile/a"), 0, 'mkdir';
+is system($cqadm, 'mkdir', '-t', 'nt:unstructured', "$testfile/b"), 0, 'mkdir';
+is system($cqadm, 'mkdir', '-t', 'nt:unstructured', "$testfile/c"), 0, 'mkdir';
+is system($cqadm, 'rm', '-f', "$testfile/a", "$testfile/b", "$testfile/c", "$testfile/d"), 0, 'rm -f, multi-path';
+is qx($cqadm exists "$testfile/a"), '', 'rm -f - exists';
+is qx($cqadm exists "$testfile/b"), '', 'rm -f - exists';
+is qx($cqadm exists "$testfile/c"), '', 'rm -f - exists';
 is system($cqadm, 'rm', $testfile), 0, 'rm mkdir type';
 
 is system($cqadm, 'put-json', $testfile, "{ 'jcr:primaryType': 'nt:unstructured', 'propOne' : 'propOneValue', 'childOne' : { 'childPropOne' : true } }"), 0, 'put-json';
