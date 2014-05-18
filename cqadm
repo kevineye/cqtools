@@ -123,6 +123,8 @@ usage: $0 <cmd> [ --conf|-c <file> ] [ --url <http://localhost:4502> ] [ --user|
     get <path> [ --output|-o <file> ]
     put <path> <value> [ --type|-t <proptype> ]
     rm <path ... > [ --force | -f ]
+    cp <path ... > <dest>
+    mv <path ... > <dest>
     mkdir <path> [ --type|-t <nodetype> ]
     get-json <path> [ --tidy ] [ --depth|-d <num|infinite> ] [ --output|-o <file> ]
     put-json <path> [ <json> ]
@@ -154,8 +156,6 @@ HELP
 # get-replication-queue
 # activate
 # deactivate
-# cp
-# mv
 # open
 # touch
 
@@ -385,6 +385,21 @@ sub is_present {
         return;
     }
 }
+
+sub _cpmv {
+    my ($self, $options, $op, @paths) = _parse_cmd_opts({}, @_);
+    my $dst = pop @paths;
+    my $params = {
+        ':operation' => $op,
+        ':dest' => ($self->is_present($dst) ? "$dst/" : $dst),
+    };
+    $params->{':applyTo'} = \@paths if @paths > 1;
+    $self->_post_sling($paths[0], $params);
+    return;
+}
+
+sub cp { shift->_cpmv('copy', @_) }
+sub mv { shift->_cpmv('move', @_) }
 
 sub query_sql {
     my $self = shift;

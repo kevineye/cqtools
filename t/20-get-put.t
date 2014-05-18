@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 use strict;
 use autodie qw(:all);
-use Test::More tests => 47;
+use Test::More tests => 65;
 
 use Cwd 'cwd';
 use FindBin '$Bin';
@@ -86,3 +86,27 @@ is qx($cqadm get $testfile/jcr:primaryType), 'nt:unstructured', 'get put-json';
 is qx($cqadm get $testfile/propOne), 'propOneValue', 'get put-json';
 is system($cqadm, 'rm', $testfile), 0, 'rm put-json';
 
+is system($cqadm, 'put-json', $testfile, "{ 'a': { 'jcr:primaryType': 'nt:unstructured', 'propOne' : 'propOneValue', 'childOne' : { 'childPropOne' : 1 } } }"), 0, 'cp-mv put-json';
+is_deeply decode_json(qx($cqadm get-json $testfile/a -d 10)),
+    { 'jcr:primaryType' => 'nt:unstructured', propOne => 'propOneValue', childOne => { 'jcr:primaryType' => 'nt:unstructured', childPropOne => 1 }}, 'cp-mv get-json';
+is system($cqadm, 'cp', "$testfile/a", "$testfile/b"), 0, 'cp-mv cp 1';
+is_deeply decode_json(qx($cqadm get-json $testfile/b -d 10)),
+    { 'jcr:primaryType' => 'nt:unstructured', propOne => 'propOneValue', childOne => { 'jcr:primaryType' => 'nt:unstructured', childPropOne => 1 }}, 'cp-mv get-json 1';
+is qx($cqadm exists "$testfile/a"), "$testfile/a", 'cm-mv exists 1';
+is system($cqadm, 'mv', "$testfile/b", "$testfile/c"), 0, 'cp-mv mv 1';
+is_deeply decode_json(qx($cqadm get-json $testfile/c -d 10)),
+    { 'jcr:primaryType' => 'nt:unstructured', propOne => 'propOneValue', childOne => { 'jcr:primaryType' => 'nt:unstructured', childPropOne => 1 }}, 'cp-mv get-json 1';
+is qx($cqadm exists "$testfile/b"), '', 'rm -f - exists';
+is system($cqadm, 'mkdir', "$testfile/e"), 0, 'cp-mv mkdir';
+is system($cqadm, 'cp', "$testfile/a", "$testfile/e"), 0, 'cp-mv cp 2';
+is_deeply decode_json(qx($cqadm get-json $testfile/e/a -d 10)),
+    { 'jcr:primaryType' => 'nt:unstructured', propOne => 'propOneValue', childOne => { 'jcr:primaryType' => 'nt:unstructured', childPropOne => 1 }}, 'cp-mv get-json 1';
+is system($cqadm, 'mkdir', "$testfile/f"), 0, 'cp-mv mkdir 2';
+is system($cqadm, 'mv', "$testfile/a", "$testfile/c", "$testfile/f"), 0, 'cp-mv mv 2';
+is qx($cqadm exists "$testfile/a"), '', 'rm -f - exists';
+is qx($cqadm exists "$testfile/c"), '', 'rm -f - exists';
+is_deeply decode_json(qx($cqadm get-json $testfile/f/a -d 10)),
+    { 'jcr:primaryType' => 'nt:unstructured', propOne => 'propOneValue', childOne => { 'jcr:primaryType' => 'nt:unstructured', childPropOne => 1 }}, 'cp-mv get-json 1';
+is_deeply decode_json(qx($cqadm get-json $testfile/f/c -d 10)),
+    { 'jcr:primaryType' => 'nt:unstructured', propOne => 'propOneValue', childOne => { 'jcr:primaryType' => 'nt:unstructured', childPropOne => 1 }}, 'cp-mv get-json 1';
+is system($cqadm, 'rm', "$testfile"), 0, 'cp-mv cleanup';
